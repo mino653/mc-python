@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Minecraft Web Python Edition</title>
+    <!-- PyScript WebAssembly Engine -->
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <!-- Three.js Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+    <style>
+        * { box-sizing: border-box; user-select: none; }
+        body { margin: 0; overflow: hidden; background: #78A7FF; font-family: sans-serif; }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 16px; height: 16px;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 5;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 0 2px rgba(0,0,0,0.8);
+        }
+        #crosshair::before { top: 7px; left: 0; width: 16px; height: 2px; }
+        #crosshair::after { top: 0; left: 7px; width: 2px; height: 16px; }
+
+        #hud {
+            position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+            display: flex; flex-direction: column; align-items: center; gap: 6px;
+            pointer-events: none; z-index: 5;
+        }
+
+        #status-bars {
+            display: flex; justify-content: space-between; width: 364px; margin-bottom: 2px;
+        }
+        .bar-group { display: flex; gap: 2px; }
+        .heart {
+            width: 14px; height: 14px; background: #E71C24;
+            border: 2px solid #000; box-shadow: inset 1px 1px #FFA3A3;
+        }
+        .heart.lost { background: #333333; box-shadow: none; border-color: #111; }
+        
+        .drumstick {
+            width: 14px; height: 14px; background: #C67A32;
+            border: 2px solid #000; box-shadow: inset 1px 1px #F0A868;
+        }
+
+        #hotbar {
+            display: flex; background: #8F8F8F; padding: 3px;
+            border: 3px solid #3C3C3C; box-shadow: inset 2px 2px #C6C6C6, inset -2px -2px #555;
+        }
+        .slot {
+            width: 40px; height: 40px; background: #8B8B8B;
+            border: 2px solid #373737; border-right-color: #FFF; border-bottom-color: #FFF;
+            display: flex; align-items: center; justify-content: center; margin: 1px;
+        }
+        .slot.active {
+            border: 3px solid #FFFFFF; margin: 0px; width: 42px; height: 42px;
+            box-shadow: 0 0 5px #FFF; z-index: 6;
+        }
+        .slot-inner { width: 26px; height: 26px; border: 1px solid rgba(0,0,0,0.3); }
+
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0, 0, 0, 0.75); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; gap: 14px; z-index: 20; color: #FFF;
+        }
+        #overlay.hidden { display: none; }
+        
+        .mc-title { font-size: 28px; text-shadow: 2px 2px #3F3F3F; color: #FFF; margin-bottom: 8px; font-weight: bold; }
+        .mc-btn {
+            width: 320px; padding: 12px 0; background: #707070; color: #E0E0E0;
+            font-size: 16px; text-align: center; font-weight: bold;
+            border: 2px solid #000; box-shadow: inset 2px 2px #AEAEAE, inset -2px -2px #3A3A3A;
+            cursor: pointer; text-shadow: 1px 1px #222;
+        }
+        .mc-btn:hover { background: #7C8BCE; color: #FFF; }
+        .slider-box {
+            display: flex; flex-direction: column; gap: 6px; width: 320px;
+            font-size: 14px; text-shadow: 1px 1px #000;
+        }
+        input[type=range] { width: 100%; accent-color: #707070; }
+    </style>
+</head>
+<body>
+
+    <div id="crosshair"></div>
+
+    <div id="hud">
+        <div id="status-bars">
+            <div class="bar-group" id="hearts-box"></div>
+            <div class="bar-group" id="food-box"></div>
+        </div>
+        <div id="hotbar"></div>
+    </div>
+
+    <div id="overlay">
+        <div class="mc-title">Game Menu</div>
+        <div class="slider-box">
+            <label id="fov-label">FOV: 75</label>
+            <input type="range" id="fov-slider" min="60" max="110" value="75">
+        </div>
+        <div class="mc-btn" id="resume-btn">Click / ESC to Play</div>
+        <div class="mc-btn" id="respawn-btn">Respawn</div>
+    </div>
+
+    <!-- PURE PYTHON SCRIPT RUNNING IN-BROWSER -->
+    <script type="py">
+from js import THREE, document, window, Math
+from pyodide.ffi import create_proxy
+
+# --- TEXTURE GENERATOR ---
+def make_noise_tex(base_r, base_g, base_b, noise=15):
+    canvas = document.createElement('canvas')
+    canvas.width = 16
+    canvas.height = 16
+    ctx = canvas.getContext('2d')
+    
+    for x in range(16):
+        for y in range(16):
+            n = Math.floor((Math.random() - 0.5) * noise * 2)
+            r = Math.max(0, Math.min(255, base_r + n))
+            g = Math.max(0, Math.min(255, base_g + n))
+            b = Math.max(0, Math.min(255, base_b + n))
+            ctx.fillStyle = f"rgb({r},{g},{b})"
+            ctx.fillRect(x, y, 1, 1)
+            
+    tex = THREE.CanvasTexture.new(canvas)
+    tex.magFilter = THREE.NearestFilter
+    tex.minFilter = THREE.NearestFilter
+    return tex
+
+# Generate block materials
+def get_material(r, g, b, noise=15):
+    tex = make_noise_tex(r, g, b, noise)
+    m = THREE.MeshLambertMaterial.new()
+    m.map = tex
+    return m
+
+MATERIALS = {
+    1: get_material(86, 125, 44, 18),   # Grass
+    2: get_material(134, 96, 67, 16),   # Dirt
+    3: get_material(112, 112, 112, 20), # Stone
+    4: get_material(102, 81, 52, 12),   # Wood
+    5: get_material(40, 90, 20, 22),    # Leaves
+    6: get_material(194, 157, 98, 14)   # Planks
+}
+
+BLOCK_HEX = { 1: "#567D2C", 2: "#866043", 3: "#707070", 4: "#665134", 5: "#285A14", 6: "#C29D62" }
+
+# --- SCENE SETUP ---
+scene = THREE.Scene.new()
+scene.background = THREE.Color.new(0x78A7FF)
+
+camera = THREE.PerspectiveCamera.new(75, window.innerWidth / window.innerHeight, 0.1, 500)
+renderer = THREE.WebGLRenderer.new()
+renderer.setSize(window.innerWidth, window.innerHeight)
+renderer.setClearColor(0x78A7FF, 1)
+document.body.appendChild(renderer.domElement)
+
+# Light setup
+ambient = THREE.AmbientLight.new(0xFFFFFF, 0.8)
+scene.add(ambient)
+sun = THREE.DirectionalLight.new(0xFFFFFF, 0.6)
+sun.position.set(50, 100, 50)
+scene.add(sun)
+
+# --- VOXEL WORLD GENERATION ---
+world_voxels = {}
+voxel_geo = THREE.BoxGeometry.new(1, 1, 1)
+
+def add_voxel(x, y, z, block_type):
+    pos_key = f"{x},{y},{z}"
+    if pos_key in world_voxels:
+        return None
+    
+    mesh = THREE.Mesh.new(voxel_geo, MATERIALS[block_type])
+    mesh.position.set(x, y, z)
+    mesh.block_type = block_type
+    mesh.grid_pos = (x, y, z)
+    scene.add(mesh)
+    world_voxels[pos_key] = mesh
+    return mesh
+
+def remove_voxel(x, y, z):
+    pos_key = f"{x},{y},{z}"
+    if pos_key in world_voxels:
+        mesh = world_voxels[pos_key]
+        scene.remove(mesh)
+        del world_voxels[pos_key]
+
+# 20x20 Ground Base
+MAP_RADIUS = 10
+for x in range(-MAP_RADIUS, MAP_RADIUS + 1):
+    for z in range(-MAP_RADIUS, MAP_RADIUS + 1):
+        add_voxel(x, 0, z, 1)   # Top Grass
+        add_voxel(x, -1, z, 2)  # Dirt
+        add_voxel(x, -2, z, 3)  # Stone
+
+# Tree
+def create_tree(bx, bz):
+    for y in range(1, 5): 
+        add_voxel(bx, y, bz, 4)
+    for lx in range(-1, 2):
+        for lz in range(-1, 2):
+            for ly in range(4, 6):
+                if not (lx == 0 and lz == 0 and ly == 4):
+                    add_voxel(bx + lx, ly, bz + lz, 5)
+
+create_tree(4, 4)
+create_tree(-4, -4)
+
+# --- CONTROLS & PLAYER ---
+player_pos = THREE.Vector3.new(0, 3, 0)
+velocity = THREE.Vector3.new(0, 0, 0)
+is_grounded = False
+health = 10
+selected_slot = 1
+
+controls = THREE.PointerLockControls.new(camera, document.body)
+camera.position.set(0, 3.5, 0)
+
+keys = {"w": False, "s": False, "a": False, "d": False, "space": False}
+
+def on_key_down(e):
+    global selected_slot
+    k = e.code
+    if k == "KeyW": keys["w"] = True
+    elif k == "KeyS": keys["s"] = True
+    elif k == "KeyA": keys["a"] = True
+    elif k == "KeyD": keys["d"] = True
+    elif k == "Space": keys["space"] = True
+    
+    if e.key in ["1", "2", "3", "4", "5", "6"]:
+        selected_slot = int(e.key)
+        for i in range(1, 7):
+            document.getElementById(f"slot-{i}").classList.remove("active")
+        document.getElementById(f"slot-{selected_slot}").classList.add("active")
+
+def on_key_up(e):
+    k = e.code
+    if k == "KeyW": keys["w"] = False
+    elif k == "KeyS": keys["s"] = False
+    elif k == "KeyA": keys["a"] = False
+    elif k == "KeyD": keys["d"] = False
+    elif k == "Space": keys["space"] = False
+
+document.addEventListener("keydown", create_proxy(on_key_down))
+document.addEventListener("keyup", create_proxy(on_key_up))
+
+# Raycasting for Placing & Breaking
+raycaster = THREE.Raycaster.new()
+screen_center = THREE.Vector2.new(0, 0)
+
+def on_mouse_down(e):
+    if not controls.isLocked: return
+    raycaster.setFromCamera(screen_center, camera)
+    
+    targets = [v for v in world_voxels.values()]
+    hits = raycaster.intersectObjects(targets)
+    
+    if len(hits) > 0 and hits[0].distance < 7:
+        hit = hits[0]
+        gp = hit.object.grid_pos
+        
+        if e.button == 0:  # Break Block
+            remove_voxel(gp[0], gp[1], gp[2])
+            
+        elif e.button == 2: # Place Block
+            norm = hit.face.normal
+            nx = gp[0] + int(Math.round(norm.x))
+            ny = gp[1] + int(Math.round(norm.y))
+            nz = gp[2] + int(Math.round(norm.z))
+            
+            p_grid_x = int(Math.floor(player_pos.x + 0.5))
+            p_grid_y = int(Math.floor(player_pos.y + 0.5))
+            p_grid_z = int(Math.floor(player_pos.z + 0.5))
+            
+            if not (nx == p_grid_x and (ny == p_grid_y or ny == p_grid_y - 1) and nz == p_grid_z):
+                add_voxel(nx, ny, nz, selected_slot)
+
+document.addEventListener("mousedown", create_proxy(on_mouse_down))
+document.addEventListener("contextmenu", create_proxy(lambda e: e.preventDefault()))
+
+# --- HUD & MENU INITIALIZATION ---
+hearts_box = document.getElementById("hearts-box")
+for i in range(10):
+    h = document.createElement("div")
+    h.className = "heart"
+    hearts_box.appendChild(h)
+
+food_box = document.getElementById("food-box")
+for i in range(10):
+    f = document.createElement("div")
+    f.className = "drumstick"
+    food_box.appendChild(f)
+
+hotbar = document.getElementById("hotbar")
+for i in range(1, 7):
+    slot = document.createElement("div")
+    slot.className = f"slot {'active' if i == 1 else ''}"
+    slot.id = f"slot-{i}"
+    inner = document.createElement("div")
+    inner.className = "slot-inner"
+    inner.style.background = BLOCK_HEX[i]
+    slot.appendChild(inner)
+    hotbar.appendChild(slot)
+
+def update_hearts_hud():
+    h_nodes = document.querySelectorAll(".heart")
+    for idx, node in enumerate(h_nodes):
+        if idx < health: node.classList.remove("lost")
+        else: node.classList.add("lost")
+
+overlay = document.getElementById("overlay")
+def toggle_menu(lock):
+    if lock: controls.lock()
+    else: controls.unlock()
+
+document.getElementById("resume-btn").addEventListener("click", create_proxy(lambda e: toggle_menu(True)))
+controls.addEventListener("lock", create_proxy(lambda e: overlay.classList.add("hidden")))
+controls.addEventListener("unlock", create_proxy(lambda e: overlay.classList.remove("hidden")))
+
+def respawn(e=None):
+    global health
+    health = 10
+    update_hearts_hud()
+    player_pos.set(0, 4, 0)
+    velocity.set(0, 0, 0)
+    toggle_menu(True)
+
+document.getElementById("respawn-btn").addEventListener("click", create_proxy(respawn))
+
+fov_slider = document.getElementById("fov-slider")
+def update_fov(e):
+    val = int(fov_slider.value)
+    camera.fov = val
+    camera.updateProjectionMatrix()
+    document.getElementById("fov-label").innerText = f"FOV: {val}"
+
+fov_slider.addEventListener("input", create_proxy(update_fov))
+
+# --- MAIN TICK & PHYSICS LOOP ---
+def block_at(x, y, z):
+    return f"{int(Math.floor(x + 0.5))},{int(Math.floor(y + 0.5))},{int(Math.floor(z + 0.5))}" in world_voxels
+
+void_timer = 0.0
+
+def game_loop(timestamp):
+    global is_grounded, void_timer, health
+    dt = 0.016
+
+    if controls.isLocked:
+        forward = THREE.Vector3.new()
+        camera.getWorldDirection(forward)
+        forward.y = 0
+        forward.normalize()
+        
+        right = THREE.Vector3.new()
+        right.crossVectors(forward, THREE.Vector3.new(0, 1, 0)).normalize()
+        
+        move_vec = THREE.Vector3.new(0, 0, 0)
+        if keys["w"]: move_vec.add(forward)
+        if keys["s"]: move_vec.sub(forward)
+        if keys["d"]: move_vec.add(right)
+        if keys["a"]: move_vec.sub(right)
+        move_vec.normalize()
+
+        speed = 6.0
+        velocity.x = move_vec.x * speed
+        velocity.z = move_vec.z * speed
+        velocity.y -= 20.0 * dt  # Gravity
+
+        if keys["space"] and is_grounded:
+            velocity.y = 7.5
+            is_grounded = False
+
+        # Collision System
+        new_x = player_pos.x + velocity.x * dt
+        if not (block_at(new_x + 0.3, player_pos.y, player_pos.z) or block_at(new_x - 0.3, player_pos.y, player_pos.z)):
+            player_pos.x = new_x
+
+        new_z = player_pos.z + velocity.z * dt
+        if not (block_at(player_pos.x, player_pos.y, new_z + 0.3) or block_at(player_pos.x, player_pos.y, new_z - 0.3)):
+            player_pos.z = new_z
+
+        new_y = player_pos.y + velocity.y * dt
+        if velocity.y < 0 and block_at(player_pos.x, new_y - 0.9, player_pos.z):
+            player_pos.y = Math.floor(player_pos.y) + 0.4
+            velocity.y = 0
+            is_grounded = True
+        else:
+            player_pos.y = new_y
+            is_grounded = False
+
+        camera.position.set(player_pos.x, player_pos.y + 0.6, player_pos.z)
+
+        # Void Fall Damage
+        if player_pos.y < -10:
+            void_timer += dt
+            if void_timer >= 0.8:
+                health -= 1
+                void_timer = 0
+                update_hearts_hud()
+                if health <= 0: respawn()
+
+    renderer.render(scene, camera)
+    window.requestAnimationFrame(proxy_loop)
+
+proxy_loop = create_proxy(game_loop)
+window.requestAnimationFrame(proxy_loop)
+    </script>
+</body>
+</html>
