@@ -46,7 +46,7 @@
         .slot.active { border: 3px solid #FFFFFF; margin: 0px; width: 42px; height: 42px; }
         .slot-inner { width: 26px; height: 26px; border: 1px solid rgba(0,0,0,0.3); }
 
-        #overlay, #options-menu {
+        #overlay, #options-menu, #inventory-menu {
             position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
             background: rgba(0, 0, 0, 0.75); display: flex; flex-direction: column;
             justify-content: center; align-items: center; gap: 10px; z-index: 20; color: #FFF;
@@ -66,6 +66,25 @@
             width: 320px; font-size: 14px;
         }
         input[type=range] { width: 160px; accent-color: #707070; }
+
+        /* Inventory Window */
+        #inv-box {
+            background: #C6C6C6; padding: 16px; border: 4px solid #3C3C3C;
+            box-shadow: inset 3px 3px #FFF, inset -3px -3px #555;
+            display: flex; flex-direction: column; gap: 12px; color: #3C3C3C;
+        }
+        #inv-grid {
+            display: grid; grid-template-columns: repeat(6, 44px); gap: 6px;
+        }
+        .inv-slot {
+            width: 44px; height: 44px; background: #8B8B8B;
+            border: 2px solid #373737; border-right-color: #FFF; border-bottom-color: #FFF;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            cursor: pointer; position: relative;
+        }
+        .inv-slot:hover { background: #A0A0A0; border-color: #FFF; }
+        .inv-inner { width: 28px; height: 28px; border: 1px solid rgba(0,0,0,0.3); }
+        .inv-name { font-size: 10px; font-weight: bold; margin-top: 2px; color: #222; text-align: center; }
     </style>
 </head>
 <body>
@@ -83,6 +102,7 @@
     <div id="overlay">
         <div class="mc-title">Game Menu</div>
         <div class="mc-btn" id="resume-btn">Back to Game</div>
+        <div class="mc-btn" id="mode-btn">Mode: Creative (Flying)</div>
         <div class="mc-btn" id="options-btn">Options...</div>
         <div class="mc-btn" id="respawn-btn">Respawn</div>
     </div>
@@ -102,6 +122,16 @@
             <input type="range" id="light-slider" min="20" max="100" value="80">
         </div>
         <div class="mc-btn" id="options-done-btn" style="margin-top: 10px;">Done</div>
+    </div>
+
+    <!-- Inventory Screen (E Key) -->
+    <div id="inventory-menu" class="hidden">
+        <div id="inv-box">
+            <div style="font-weight: bold; font-size: 16px;">Creative Item Selection</div>
+            <div style="font-size: 12px; color: #555;">Click an item to place it into the selected hotbar slot.</div>
+            <div id="inv-grid"></div>
+            <div class="mc-btn" id="inv-close-btn" style="width: 100%; padding: 6px 0; margin-top: 6px;">Close (E)</div>
+        </div>
     </div>
 
     <script type="py">
@@ -139,12 +169,26 @@ MATERIALS = {
     3: get_mat(112, 112, 112, 20), # Stone
     4: get_mat(102, 81, 52, 12),   # Wood
     5: get_mat(40, 90, 20, 22),    # Leaves
-    6: get_mat(194, 157, 98, 14)   # Planks
+    6: get_mat(194, 157, 98, 14),  # Planks
+    7: get_mat(210, 195, 140, 15), # Sand
+    8: get_mat(160, 60, 45, 15),   # Brick
+    9: get_mat(40, 40, 40, 20),    # Obsidian
+    10: get_mat(240, 240, 240, 5), # Quartz
+    11: get_mat(220, 175, 45, 15), # Gold
+    12: get_mat(60, 200, 200, 15)  # Diamond
 }
 
-BLOCK_HEX = { 1: "#567D2C", 2: "#866043", 3: "#707070", 4: "#665134", 5: "#285A14", 6: "#C29D62" }
+BLOCK_NAMES = {
+    1: "Grass", 2: "Dirt", 3: "Stone", 4: "Wood", 5: "Leaves", 6: "Planks",
+    7: "Sand", 8: "Brick", 9: "Obsidian", 10: "Quartz", 11: "Gold", 12: "Diamond"
+}
 
-# --- SCENE & CAMERA ---
+BLOCK_HEX = {
+    1: "#567D2C", 2: "#866043", 3: "#707070", 4: "#665134", 5: "#285A14", 6: "#C29D62",
+    7: "#D2C38C", 8: "#A03C2D", 9: "#282828", 10: "#EFEFEF", 11: "#DCB02D", 12: "#3CC8C8"
+}
+
+# --- SCENE & CAMERA OPTIMIZATION ---
 scene = THREE.Scene.new()
 scene.background = THREE.Color.new(0x78A7FF)
 
@@ -166,6 +210,9 @@ chunks = {}
 world_voxels = {}
 voxel_geo = THREE.BoxGeometry.new(1, 1, 1)
 
+# Hotbar layout mapping slot_index (1-6) -> block_id
+hotbar_slots = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6 }
+
 def get_elevation(x, z):
     return int(Math.sin(x / 6) * 2 + Math.cos(z / 6) * 2)
 
@@ -173,7 +220,8 @@ def add_voxel(x, y, z, block_type, sync=False):
     pos_key = f"{x},{y},{z}"
     if pos_key in world_voxels:
         return
-    mesh = THREE.Mesh.new(voxel_geo, MATERIALS[block_type])
+    b_mat = MATERIALS.get(block_type, MATERIALS[1])
+    mesh = THREE.Mesh.new(voxel_geo, b_mat)
     mesh.position.set(x, y, z)
     mesh.block_type = block_type
     mesh.grid_pos = (x, y, z)
@@ -246,37 +294,34 @@ hair_mat.color = THREE.Color.new(0x422A14)
 def create_steve_avatar():
     group = THREE.Group.new()
     
-    # Head
+    # Head & Hair
     head = THREE.Mesh.new(THREE.BoxGeometry.new(0.5, 0.5, 0.5), skin_mat)
     head.position.set(0, 0.55, 0)
     group.add(head)
     
-    # Hair
     hair = THREE.Mesh.new(THREE.BoxGeometry.new(0.52, 0.2, 0.52), hair_mat)
     hair.position.set(0, 0.72, 0)
     group.add(hair)
     
-    # Torso (Shirt)
+    # Torso
     body = THREE.Mesh.new(THREE.BoxGeometry.new(0.5, 0.75, 0.25), shirt_mat)
     body.position.set(0, -0.075, 0)
     group.add(body)
     
-    # Left Arm
+    # Arms
     l_arm = THREE.Mesh.new(THREE.BoxGeometry.new(0.22, 0.75, 0.22), skin_mat)
     l_arm.position.set(-0.36, -0.075, 0)
     group.add(l_arm)
     
-    # Right Arm
     r_arm = THREE.Mesh.new(THREE.BoxGeometry.new(0.22, 0.75, 0.22), skin_mat)
     r_arm.position.set(0.36, -0.075, 0)
     group.add(r_arm)
     
-    # Left Leg
+    # Legs
     l_leg = THREE.Mesh.new(THREE.BoxGeometry.new(0.23, 0.75, 0.23), pants_mat)
     l_leg.position.set(-0.13, -0.825, 0)
     group.add(l_leg)
     
-    # Right Leg
     r_leg = THREE.Mesh.new(THREE.BoxGeometry.new(0.23, 0.75, 0.23), pants_mat)
     r_leg.position.set(0.13, -0.825, 0)
     group.add(r_leg)
@@ -353,14 +398,17 @@ def on_ws_message(e):
             add_voxel(data["x"], data["y"], data["z"], data["block_type"])
 
 try:
-    # Set to your Cloudflare trycloudflare domain
     ws = WebSocket.new("wss://basement-things-out-techniques.trycloudflare.com")
     ws.onopen = create_proxy(on_ws_open)
     ws.onmessage = create_proxy(on_ws_message)
 except Exception:
     pass
 
-# --- CONTROLS & PHYSICS ---
+# --- GAME MODES & CONTROLS ---
+is_creative = True
+is_flying = True
+inventory_open = False
+
 player_pos = THREE.Vector3.new(0, 6, 0)
 velocity = THREE.Vector3.new(0, 0, 0)
 is_grounded = False
@@ -370,16 +418,43 @@ selected_slot = 1
 controls = THREE.PointerLockControls.new(camera, document.body)
 camera.position.set(0, 6.6, 0)
 
-keys = {"w": False, "s": False, "a": False, "d": False, "space": False}
+keys = {"w": False, "s": False, "a": False, "d": False, "space": False, "shift": False}
+
+def update_hotbar_ui():
+    for i in range(1, 7):
+        inner = document.getElementById(f"slot-inner-{i}")
+        bid = hotbar_slots[i]
+        inner.style.background = BLOCK_HEX[bid]
+
+def open_inventory():
+    global inventory_open
+    inventory_open = True
+    controls.unlock()
+    document.getElementById("overlay").classList.add("hidden")
+    document.getElementById("inventory-menu").classList.remove("hidden")
+
+def close_inventory():
+    global inventory_open
+    inventory_open = False
+    document.getElementById("inventory-menu").classList.add("hidden")
+    controls.lock()
 
 def on_key_down(e):
     global selected_slot
     k = e.code
+
+    # Inventory Toggle (E Key)
+    if k == "KeyE":
+        if inventory_open: close_inventory()
+        elif controls.isLocked: open_inventory()
+        return
+
     if k == "KeyW": keys["w"] = True
     elif k == "KeyS": keys["s"] = True
     elif k == "KeyA": keys["a"] = True
     elif k == "KeyD": keys["d"] = True
     elif k == "Space": keys["space"] = True
+    elif k == "ShiftLeft" or k == "ShiftRight": keys["shift"] = True
     
     if e.key in ["1", "2", "3", "4", "5", "6"]:
         selected_slot = int(e.key)
@@ -394,6 +469,7 @@ def on_key_up(e):
     elif k == "KeyA": keys["a"] = False
     elif k == "KeyD": keys["d"] = False
     elif k == "Space": keys["space"] = False
+    elif k == "ShiftLeft" or k == "ShiftRight": keys["shift"] = False
 
 document.addEventListener("keydown", create_proxy(on_key_down))
 document.addEventListener("keyup", create_proxy(on_key_up))
@@ -403,7 +479,7 @@ raycaster = THREE.Raycaster.new()
 screen_center = THREE.Vector2.new(0, 0)
 
 def on_mouse_down(e):
-    if not controls.isLocked: return
+    if not controls.isLocked or inventory_open: return
     raycaster.setFromCamera(screen_center, camera)
     
     px, py, pz = player_pos.x, player_pos.y, player_pos.z
@@ -430,8 +506,10 @@ def on_mouse_down(e):
             p_gy = int(Math.floor(player_pos.y + 0.5))
             p_gz = int(Math.floor(player_pos.z + 0.5))
             
+            # Place the block assigned to the current hotbar slot
+            current_block_id = hotbar_slots[selected_slot]
             if not (nx == p_gx and (ny == p_gy or ny == p_gy - 1) and nz == p_gz):
-                add_voxel(nx, ny, nz, selected_slot, sync=True)
+                add_voxel(nx, ny, nz, current_block_id, sync=True)
 
 document.addEventListener("mousedown", create_proxy(on_mouse_down))
 document.addEventListener("contextmenu", create_proxy(lambda e: e.preventDefault()))
@@ -456,15 +534,38 @@ for i in range(1, 7):
     slot.id = f"slot-{i}"
     inner = document.createElement("div")
     inner.className = "slot-inner"
+    inner.id = f"slot-inner-{i}"
     inner.style.background = BLOCK_HEX[i]
     slot.appendChild(inner)
     hotbar.appendChild(slot)
 
-def update_hearts_hud():
-    h_nodes = document.querySelectorAll(".heart")
-    for idx, node in enumerate(h_nodes):
-        if idx < health: node.classList.remove("lost")
-        else: node.classList.add("lost")
+# Populate Creative Inventory Grid
+inv_grid = document.getElementById("inv-grid")
+def create_inv_item_click(bid):
+    def on_item_click(e):
+        hotbar_slots[selected_slot] = bid
+        update_hotbar_ui()
+        close_inventory()
+    return create_proxy(on_item_click)
+
+for bid in range(1, 13):
+    islot = document.createElement("div")
+    islot.className = "inv-slot"
+    
+    iinner = document.createElement("div")
+    iinner.className = "inv-inner"
+    iinner.style.background = BLOCK_HEX[bid]
+    islot.appendChild(iinner)
+    
+    lbl = document.createElement("div")
+    lbl.className = "inv-name"
+    lbl.innerText = BLOCK_NAMES[bid]
+    islot.appendChild(lbl)
+    
+    islot.addEventListener("click", create_inv_item_click(bid))
+    inv_grid.appendChild(islot)
+
+document.getElementById("inv-close-btn").addEventListener("click", create_proxy(lambda e: close_inventory()))
 
 overlay = document.getElementById("overlay")
 options_menu = document.getElementById("options-menu")
@@ -474,13 +575,32 @@ def toggle_menu(lock):
     else: controls.unlock()
 
 document.getElementById("resume-btn").addEventListener("click", create_proxy(lambda e: toggle_menu(True)))
-controls.addEventListener("lock", create_proxy(lambda e: overlay.classList.add("hidden")))
-controls.addEventListener("unlock", create_proxy(lambda e: overlay.classList.remove("hidden")))
+controls.addEventListener("lock", create_proxy(lambda e: (
+    overlay.classList.add("hidden") if not inventory_open else None
+)))
+controls.addEventListener("unlock", create_proxy(lambda e: (
+    overlay.classList.remove("hidden") if not inventory_open else None
+)))
+
+def toggle_gamemode(e):
+    global is_creative, is_flying
+    is_creative = not is_creative
+    is_flying = is_creative
+    btn = document.getElementById("mode-btn")
+    status_bar = document.getElementById("status-bars")
+    if is_creative:
+        btn.innerText = "Mode: Creative (Flying)"
+        status_bar.style.display = "none"
+    else:
+        btn.innerText = "Mode: Survival"
+        status_bar.style.display = "flex"
+
+document.getElementById("mode-btn").addEventListener("click", create_proxy(toggle_gamemode))
+document.getElementById("status-bars").style.display = "none" # Default to Creative
 
 def respawn(e=None):
     global health
     health = 10
-    update_hearts_hud()
     player_pos.set(0, 6, 0)
     velocity.set(0, 0, 0)
     toggle_menu(True)
@@ -524,22 +644,22 @@ light_slider.addEventListener("input", create_proxy(update_light))
 def block_at(x, y, z):
     return f"{int(Math.floor(x + 0.5))},{int(Math.floor(y + 0.5))},{int(Math.floor(z + 0.5))}" in world_voxels
 
-void_timer = 0.0
 network_sync_timer = 0.0
 chunk_tick = 0
 
 def game_loop(timestamp):
-    global is_grounded, void_timer, health, network_sync_timer, chunk_tick
+    global is_grounded, health, network_sync_timer, chunk_tick
     dt = 0.016
 
-    if controls.isLocked:
+    if controls.isLocked and not inventory_open:
         chunk_tick += 1
         if chunk_tick % 12 == 0:
             update_chunks_around_player(player_pos.x, player_pos.z)
 
         forward = THREE.Vector3.new()
         camera.getWorldDirection(forward)
-        forward.y = 0
+        if not is_flying:
+            forward.y = 0
         forward.normalize()
         
         right = THREE.Vector3.new()
@@ -552,35 +672,45 @@ def game_loop(timestamp):
         if keys["a"]: move_vec.sub(right)
         move_vec.normalize()
 
-        speed = 5.5
+        speed = 8.5 if is_flying else 5.5
         velocity.x = move_vec.x * speed
         velocity.z = move_vec.z * speed
-        velocity.y -= 22.0 * dt
 
-        if keys["space"] and is_grounded:
-            velocity.y = 7.5
-            is_grounded = False
+        # Flight mechanics vs Gravity
+        if is_flying:
+            if keys["space"]:
+                velocity.y = speed
+            elif keys["shift"]:
+                velocity.y = -speed
+            else:
+                velocity.y = 0.0
+        else:
+            velocity.y -= 22.0 * dt
+            if keys["space"] and is_grounded:
+                velocity.y = 7.5
+                is_grounded = False
 
         new_x = player_pos.x + velocity.x * dt
-        if not (block_at(new_x + 0.3, player_pos.y, player_pos.z) or block_at(new_x - 0.3, player_pos.y, player_pos.z)):
+        if is_flying or not (block_at(new_x + 0.3, player_pos.y, player_pos.z) or block_at(new_x - 0.3, player_pos.y, player_pos.z)):
             player_pos.x = new_x
 
         new_z = player_pos.z + velocity.z * dt
-        if not (block_at(player_pos.x, player_pos.y, new_z + 0.3) or block_at(player_pos.x, player_pos.y, new_z - 0.3)):
+        if is_flying or not (block_at(player_pos.x, player_pos.y, new_z + 0.3) or block_at(player_pos.x, player_pos.y, new_z - 0.3)):
             player_pos.z = new_z
 
         new_y = player_pos.y + velocity.y * dt
-        if velocity.y < 0 and block_at(player_pos.x, new_y - 0.9, player_pos.z):
+        if not is_flying and velocity.y < 0 and block_at(player_pos.x, new_y - 0.9, player_pos.z):
             player_pos.y = Math.floor(player_pos.y) + 0.4
             velocity.y = 0
             is_grounded = True
         else:
             player_pos.y = new_y
-            is_grounded = False
+            if not is_flying:
+                is_grounded = False
 
         camera.position.set(player_pos.x, player_pos.y + 0.6, player_pos.z)
 
-        # Network update throttle (sends position & yaw angle)
+        # Network update throttle
         network_sync_timer += dt
         if network_sync_timer > 0.15 and ws_connected:
             send_socket_message({
@@ -591,15 +721,6 @@ def game_loop(timestamp):
                 "rot": camera.rotation.y
             })
             network_sync_timer = 0
-
-        # Void damage
-        if player_pos.y < -15:
-            void_timer += dt
-            if void_timer >= 0.8:
-                health -= 1
-                void_timer = 0
-                update_hearts_hud()
-                if health <= 0: respawn()
 
     renderer.render(scene, camera)
     window.requestAnimationFrame(proxy_loop)
