@@ -105,7 +105,8 @@
     </div>
 
     <script type="py">
-from js import THREE, document, window, Math, WebSocket, JSON
+import json
+from js import THREE, document, window, Math, WebSocket
 from pyodide.ffi import create_proxy
 
 # --- PROCEDURAL TEXTURES ---
@@ -148,8 +149,7 @@ scene = THREE.Scene.new()
 scene.background = THREE.Color.new(0x78A7FF)
 
 camera = THREE.PerspectiveCamera.new(75, window.innerWidth / window.innerHeight, 0.1, 150)
-renderer = THREE.WebGLRenderer.new(THREE.Object.new({"powerPreference": "high-performance", "antialias": False}))
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+renderer = THREE.WebGLRenderer.new()
 renderer.setSize(window.innerWidth, window.innerHeight)
 document.body.appendChild(renderer.domElement)
 
@@ -240,68 +240,63 @@ player_mat.color = THREE.Color.new(0x00AAAA)
 
 def send_socket_message(payload):
     if ws and ws.readyState == 1:
-        ws.send(JSON.stringify(THREE.Object.new(payload)))
+        ws.send(json.dumps(payload))
 
 def on_ws_open(e):
     global ws_connected
     ws_connected = True
 
 def on_ws_message(e):
-    data = JSON.parse(e.data)
-    msg_type = data.type
+    data = json.loads(e.data)
+    msg_type = data.get("type")
 
     if msg_type == "init":
-        # Spawn local player at server-assigned offset
-        if data.spawn:
-            player_pos.set(data.spawn.x, data.spawn.y, data.spawn.z)
-            camera.position.set(data.spawn.x, data.spawn.y + 0.6, data.spawn.z)
+        spawn = data.get("spawn")
+        if spawn:
+            player_pos.set(spawn["x"], spawn["y"], spawn["z"])
+            camera.position.set(spawn["x"], spawn["y"] + 0.6, spawn["z"])
 
-        # Load existing players
-        if data.players:
-            for pid in list(data.players):
-                p = data.players[pid]
-                avatar = THREE.Mesh.new(player_geo, player_mat)
-                avatar.position.set(p.x, p.y, p.z)
-                scene.add(avatar)
-                other_players[pid] = avatar
+        players = data.get("players", {})
+        for pid, p in players.items():
+            avatar = THREE.Mesh.new(player_geo, player_mat)
+            avatar.position.set(p["x"], p["y"], p["z"])
+            scene.add(avatar)
+            other_players[pid] = avatar
 
-        # Load world modifications
-        diff = data.world_diff
-        if diff:
-            for key in list(diff):
-                coords = [int(n) for n in key.split(",")]
-                item = diff[key]
-                if item.action == "break":
-                    remove_voxel(coords[0], coords[1], coords[2])
-                elif item.action == "place":
-                    add_voxel(coords[0], coords[1], coords[2], item.type)
+        diff = data.get("world_diff", {})
+        for key, item in diff.items():
+            coords = [int(n) for n in key.split(",")]
+            if item["action"] == "break":
+                remove_voxel(coords[0], coords[1], coords[2])
+            elif item["action"] == "place":
+                add_voxel(coords[0], coords[1], coords[2], item["type"])
 
     elif msg_type == "player_join":
-        pid = data.id
+        pid = data["id"]
         avatar = THREE.Mesh.new(player_geo, player_mat)
-        avatar.position.set(data.x, data.y, data.z)
+        avatar.position.set(data["x"], data["y"], data["z"])
         scene.add(avatar)
         other_players[pid] = avatar
 
     elif msg_type == "player_move":
-        pid = data.id
+        pid = data["id"]
         if pid not in other_players:
             avatar = THREE.Mesh.new(player_geo, player_mat)
             scene.add(avatar)
             other_players[pid] = avatar
-        other_players[pid].position.set(data.x, data.y, data.z)
+        other_players[pid].position.set(data["x"], data["y"], data["z"])
 
     elif msg_type == "player_leave":
-        pid = data.id
+        pid = data["id"]
         if pid in other_players:
             scene.remove(other_players[pid])
             del other_players[pid]
 
     elif msg_type == "block_update":
-        if data.action == "break":
-            remove_voxel(data.x, data.y, data.z)
-        elif data.action == "place":
-            add_voxel(data.x, data.y, data.z, data.block_type)
+        if data["action"] == "break":
+            remove_voxel(data["x"], data["y"], data["z"])
+        elif data["action"] == "place":
+            add_voxel(data["x"], data["y"], data["z"], data["block_type"])
 
 try:
     # Update with your active Cloudflare tunnel domain
@@ -471,7 +466,7 @@ def update_light(e):
     document.getElementById("light-label").innerText = f"Brightness: {int(val * 100)}%"
 light_slider.addEventListener("input", create_proxy(update_light))
 
-# --- OPTIMIZED GAME LOOP ---
+# --- GAME LOOP ---
 def block_at(x, y, z):
     return f"{int(Math.floor(x + 0.5))},{int(Math.floor(y + 0.5))},{int(Math.floor(z + 0.5))}" in world_voxels
 
