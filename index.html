@@ -94,8 +94,8 @@
             <input type="range" id="fov-slider" min="60" max="110" value="75">
         </div>
         <div class="setting-row">
-            <label id="render-label">Render Distance: 4</label>
-            <input type="range" id="render-slider" min="2" max="8" value="4">
+            <label id="render-label">Render Distance: 2</label>
+            <input type="range" id="render-slider" min="1" max="4" value="2">
         </div>
         <div class="setting-row">
             <label id="light-label">Brightness: 80%</label>
@@ -143,12 +143,13 @@ MATERIALS = {
 
 BLOCK_HEX = { 1: "#567D2C", 2: "#866043", 3: "#707070", 4: "#665134", 5: "#285A14", 6: "#C29D62" }
 
-# --- SCENE & CAMERA ---
+# --- SCENE & CAMERA OPTIMIZATION ---
 scene = THREE.Scene.new()
 scene.background = THREE.Color.new(0x78A7FF)
 
-camera = THREE.PerspectiveCamera.new(75, window.innerWidth / window.innerHeight, 0.1, 500)
-renderer = THREE.WebGLRenderer.new()
+camera = THREE.PerspectiveCamera.new(75, window.innerWidth / window.innerHeight, 0.1, 150)
+renderer = THREE.WebGLRenderer.new(THREE.Object.new({"powerPreference": "high-performance", "antialias": False}))
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
 renderer.setSize(window.innerWidth, window.innerHeight)
 document.body.appendChild(renderer.domElement)
 
@@ -158,9 +159,9 @@ sun = THREE.DirectionalLight.new(0xFFFFFF, 0.6)
 sun.position.set(50, 100, 50)
 scene.add(sun)
 
-# --- CHUNKS & VOXEL ENGINE ---
-CHUNK_SIZE = 8
-RENDER_DISTANCE = 4
+# --- LIGHTWEIGHT CHUNK & VOXEL ENGINE ---
+CHUNK_SIZE = 6
+RENDER_DISTANCE = 2
 chunks = {}
 world_voxels = {}
 voxel_geo = THREE.BoxGeometry.new(1, 1, 1)
@@ -229,7 +230,7 @@ def update_chunks_around_player(px, pz):
         for dz in range(-RENDER_DISTANCE, RENDER_DISTANCE + 1):
             generate_chunk(current_cx + dx, current_cz + dz)
 
-# --- SECURE WEBSOCKETS (CLOUDFLARE TUNNEL) ---
+# --- SECURE WEBSOCKETS ---
 ws = None
 ws_connected = False
 other_players = {}
@@ -250,6 +251,21 @@ def on_ws_message(e):
     msg_type = data.type
 
     if msg_type == "init":
+        # Spawn local player at server-assigned offset
+        if data.spawn:
+            player_pos.set(data.spawn.x, data.spawn.y, data.spawn.z)
+            camera.position.set(data.spawn.x, data.spawn.y + 0.6, data.spawn.z)
+
+        # Load existing players
+        if data.players:
+            for pid in list(data.players):
+                p = data.players[pid]
+                avatar = THREE.Mesh.new(player_geo, player_mat)
+                avatar.position.set(p.x, p.y, p.z)
+                scene.add(avatar)
+                other_players[pid] = avatar
+
+        # Load world modifications
         diff = data.world_diff
         if diff:
             for key in list(diff):
@@ -263,6 +279,7 @@ def on_ws_message(e):
     elif msg_type == "player_join":
         pid = data.id
         avatar = THREE.Mesh.new(player_geo, player_mat)
+        avatar.position.set(data.x, data.y, data.z)
         scene.add(avatar)
         other_players[pid] = avatar
 
@@ -287,7 +304,7 @@ def on_ws_message(e):
             add_voxel(data.x, data.y, data.z, data.block_type)
 
 try:
-    # Connected via your Cloudflare tunnel
+    # Update with your active Cloudflare tunnel domain
     ws = WebSocket.new("wss://basement-things-out-techniques.trycloudflare.com")
     ws.onopen = create_proxy(on_ws_open)
     ws.onmessage = create_proxy(on_ws_message)
@@ -295,14 +312,14 @@ except Exception:
     pass
 
 # --- CONTROLS & PHYSICS ---
-player_pos = THREE.Vector3.new(0, 5, 0)
+player_pos = THREE.Vector3.new(0, 6, 0)
 velocity = THREE.Vector3.new(0, 0, 0)
 is_grounded = False
 health = 10
 selected_slot = 1
 
 controls = THREE.PointerLockControls.new(camera, document.body)
-camera.position.set(0, 5, 0)
+camera.position.set(0, 6.6, 0)
 
 keys = {"w": False, "s": False, "a": False, "d": False, "space": False}
 
@@ -332,6 +349,7 @@ def on_key_up(e):
 document.addEventListener("keydown", create_proxy(on_key_down))
 document.addEventListener("keyup", create_proxy(on_key_up))
 
+# Spatial Proximity Raycasting
 raycaster = THREE.Raycaster.new()
 screen_center = THREE.Vector2.new(0, 0)
 
@@ -339,7 +357,12 @@ def on_mouse_down(e):
     if not controls.isLocked: return
     raycaster.setFromCamera(screen_center, camera)
     
-    targets = [v for v in world_voxels.values()]
+    px, py, pz = player_pos.x, player_pos.y, player_pos.z
+    targets = [
+        v for v in world_voxels.values() 
+        if abs(v.position.x - px) <= 6 and abs(v.position.z - pz) <= 6 and abs(v.position.y - py) <= 6
+    ]
+    
     hits = raycaster.intersectObjects(targets)
     
     if len(hits) > 0 and hits[0].distance < 7:
@@ -448,19 +471,22 @@ def update_light(e):
     document.getElementById("light-label").innerText = f"Brightness: {int(val * 100)}%"
 light_slider.addEventListener("input", create_proxy(update_light))
 
-# --- GAME LOOP ---
+# --- OPTIMIZED GAME LOOP ---
 def block_at(x, y, z):
     return f"{int(Math.floor(x + 0.5))},{int(Math.floor(y + 0.5))},{int(Math.floor(z + 0.5))}" in world_voxels
 
 void_timer = 0.0
 network_sync_timer = 0.0
+chunk_tick = 0
 
 def game_loop(timestamp):
-    global is_grounded, void_timer, health, network_sync_timer
+    global is_grounded, void_timer, health, network_sync_timer, chunk_tick
     dt = 0.016
 
     if controls.isLocked:
-        update_chunks_around_player(player_pos.x, player_pos.z)
+        chunk_tick += 1
+        if chunk_tick % 12 == 0:
+            update_chunks_around_player(player_pos.x, player_pos.z)
 
         forward = THREE.Vector3.new()
         camera.getWorldDirection(forward)
@@ -505,8 +531,9 @@ def game_loop(timestamp):
 
         camera.position.set(player_pos.x, player_pos.y + 0.6, player_pos.z)
 
+        # Network update throttle
         network_sync_timer += dt
-        if network_sync_timer > 0.1 and ws_connected:
+        if network_sync_timer > 0.15 and ws_connected:
             send_socket_message({
                 "type": "move",
                 "x": player_pos.x,
@@ -515,6 +542,7 @@ def game_loop(timestamp):
             })
             network_sync_timer = 0
 
+        # Void damage
         if player_pos.y < -15:
             void_timer += dt
             if void_timer >= 0.8:
