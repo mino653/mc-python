@@ -144,7 +144,7 @@ MATERIALS = {
 
 BLOCK_HEX = { 1: "#567D2C", 2: "#866043", 3: "#707070", 4: "#665134", 5: "#285A14", 6: "#C29D62" }
 
-# --- SCENE & CAMERA OPTIMIZATION ---
+# --- SCENE & CAMERA ---
 scene = THREE.Scene.new()
 scene.background = THREE.Color.new(0x78A7FF)
 
@@ -159,7 +159,7 @@ sun = THREE.DirectionalLight.new(0xFFFFFF, 0.6)
 sun.position.set(50, 100, 50)
 scene.add(sun)
 
-# --- LIGHTWEIGHT CHUNK & VOXEL ENGINE ---
+# --- CHUNKS & VOXEL ENGINE ---
 CHUNK_SIZE = 6
 RENDER_DISTANCE = 2
 chunks = {}
@@ -230,13 +230,63 @@ def update_chunks_around_player(px, pz):
         for dz in range(-RENDER_DISTANCE, RENDER_DISTANCE + 1):
             generate_chunk(current_cx + dx, current_cz + dz)
 
+# --- STEVE AVATAR FACTORY ---
+skin_mat = THREE.MeshLambertMaterial.new()
+skin_mat.color = THREE.Color.new(0xD29B72)
+
+shirt_mat = THREE.MeshLambertMaterial.new()
+shirt_mat.color = THREE.Color.new(0x00AFAF)
+
+pants_mat = THREE.MeshLambertMaterial.new()
+pants_mat.color = THREE.Color.new(0x283890)
+
+hair_mat = THREE.MeshLambertMaterial.new()
+hair_mat.color = THREE.Color.new(0x422A14)
+
+def create_steve_avatar():
+    group = THREE.Group.new()
+    
+    # Head
+    head = THREE.Mesh.new(THREE.BoxGeometry.new(0.5, 0.5, 0.5), skin_mat)
+    head.position.set(0, 0.55, 0)
+    group.add(head)
+    
+    # Hair
+    hair = THREE.Mesh.new(THREE.BoxGeometry.new(0.52, 0.2, 0.52), hair_mat)
+    hair.position.set(0, 0.72, 0)
+    group.add(hair)
+    
+    # Torso (Shirt)
+    body = THREE.Mesh.new(THREE.BoxGeometry.new(0.5, 0.75, 0.25), shirt_mat)
+    body.position.set(0, -0.075, 0)
+    group.add(body)
+    
+    # Left Arm
+    l_arm = THREE.Mesh.new(THREE.BoxGeometry.new(0.22, 0.75, 0.22), skin_mat)
+    l_arm.position.set(-0.36, -0.075, 0)
+    group.add(l_arm)
+    
+    # Right Arm
+    r_arm = THREE.Mesh.new(THREE.BoxGeometry.new(0.22, 0.75, 0.22), skin_mat)
+    r_arm.position.set(0.36, -0.075, 0)
+    group.add(r_arm)
+    
+    # Left Leg
+    l_leg = THREE.Mesh.new(THREE.BoxGeometry.new(0.23, 0.75, 0.23), pants_mat)
+    l_leg.position.set(-0.13, -0.825, 0)
+    group.add(l_leg)
+    
+    # Right Leg
+    r_leg = THREE.Mesh.new(THREE.BoxGeometry.new(0.23, 0.75, 0.23), pants_mat)
+    r_leg.position.set(0.13, -0.825, 0)
+    group.add(r_leg)
+    
+    return group
+
 # --- SECURE WEBSOCKETS ---
 ws = None
 ws_connected = False
 other_players = {}
-player_geo = THREE.BoxGeometry.new(0.6, 1.8, 0.6)
-player_mat = THREE.MeshLambertMaterial.new()
-player_mat.color = THREE.Color.new(0x00AAAA)
 
 def send_socket_message(payload):
     if ws and ws.readyState == 1:
@@ -258,7 +308,7 @@ def on_ws_message(e):
 
         players = data.get("players", {})
         for pid, p in players.items():
-            avatar = THREE.Mesh.new(player_geo, player_mat)
+            avatar = create_steve_avatar()
             avatar.position.set(p["x"], p["y"], p["z"])
             scene.add(avatar)
             other_players[pid] = avatar
@@ -273,7 +323,7 @@ def on_ws_message(e):
 
     elif msg_type == "player_join":
         pid = data["id"]
-        avatar = THREE.Mesh.new(player_geo, player_mat)
+        avatar = create_steve_avatar()
         avatar.position.set(data["x"], data["y"], data["z"])
         scene.add(avatar)
         other_players[pid] = avatar
@@ -281,10 +331,14 @@ def on_ws_message(e):
     elif msg_type == "player_move":
         pid = data["id"]
         if pid not in other_players:
-            avatar = THREE.Mesh.new(player_geo, player_mat)
+            avatar = create_steve_avatar()
             scene.add(avatar)
             other_players[pid] = avatar
-        other_players[pid].position.set(data["x"], data["y"], data["z"])
+        
+        avatar = other_players[pid]
+        avatar.position.set(data["x"], data["y"], data["z"])
+        if "rot" in data:
+            avatar.rotation.y = data["rot"]
 
     elif msg_type == "player_leave":
         pid = data["id"]
@@ -299,7 +353,7 @@ def on_ws_message(e):
             add_voxel(data["x"], data["y"], data["z"], data["block_type"])
 
 try:
-    # Update with your active Cloudflare tunnel domain
+    # Set to your Cloudflare trycloudflare domain
     ws = WebSocket.new("wss://basement-things-out-techniques.trycloudflare.com")
     ws.onopen = create_proxy(on_ws_open)
     ws.onmessage = create_proxy(on_ws_message)
@@ -344,7 +398,7 @@ def on_key_up(e):
 document.addEventListener("keydown", create_proxy(on_key_down))
 document.addEventListener("keyup", create_proxy(on_key_up))
 
-# Spatial Proximity Raycasting
+# Raycasting
 raycaster = THREE.Raycaster.new()
 screen_center = THREE.Vector2.new(0, 0)
 
@@ -526,14 +580,15 @@ def game_loop(timestamp):
 
         camera.position.set(player_pos.x, player_pos.y + 0.6, player_pos.z)
 
-        # Network update throttle
+        # Network update throttle (sends position & yaw angle)
         network_sync_timer += dt
         if network_sync_timer > 0.15 and ws_connected:
             send_socket_message({
                 "type": "move",
                 "x": player_pos.x,
                 "y": player_pos.y,
-                "z": player_pos.z
+                "z": player_pos.z,
+                "rot": camera.rotation.y
             })
             network_sync_timer = 0
 
