@@ -67,7 +67,7 @@
         }
         input[type=range] { width: 160px; accent-color: #707070; }
 
-        /* Inventory Window */
+        /* Creative Inventory Menu */
         #inv-box {
             background: #C6C6C6; padding: 16px; border: 4px solid #3C3C3C;
             box-shadow: inset 3px 3px #FFF, inset -3px -3px #555;
@@ -124,7 +124,6 @@
         <div class="mc-btn" id="options-done-btn" style="margin-top: 10px;">Done</div>
     </div>
 
-    <!-- Inventory Screen (E Key) -->
     <div id="inventory-menu" class="hidden">
         <div id="inv-box">
             <div style="font-weight: bold; font-size: 16px;">Creative Item Selection</div>
@@ -210,7 +209,6 @@ chunks = {}
 world_voxels = {}
 voxel_geo = THREE.BoxGeometry.new(1, 1, 1)
 
-# Hotbar layout mapping slot_index (1-6) -> block_id
 hotbar_slots = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6 }
 
 def get_elevation(x, z):
@@ -278,7 +276,7 @@ def update_chunks_around_player(px, pz):
         for dz in range(-RENDER_DISTANCE, RENDER_DISTANCE + 1):
             generate_chunk(current_cx + dx, current_cz + dz)
 
-# --- STEVE AVATAR FACTORY ---
+# --- STEVE AVATAR MODEL ---
 skin_mat = THREE.MeshLambertMaterial.new()
 skin_mat.color = THREE.Color.new(0xD29B72)
 
@@ -328,7 +326,7 @@ def create_steve_avatar():
     
     return group
 
-# --- SECURE WEBSOCKETS ---
+# --- SECURE WEBSOCKETS & LERP INTERPOLATION ---
 ws = None
 ws_connected = False
 other_players = {}
@@ -355,6 +353,8 @@ def on_ws_message(e):
         for pid, p in players.items():
             avatar = create_steve_avatar()
             avatar.position.set(p["x"], p["y"], p["z"])
+            avatar.target_pos = THREE.Vector3.new(p["x"], p["y"], p["z"])
+            avatar.target_rot = 0.0
             scene.add(avatar)
             other_players[pid] = avatar
 
@@ -370,6 +370,8 @@ def on_ws_message(e):
         pid = data["id"]
         avatar = create_steve_avatar()
         avatar.position.set(data["x"], data["y"], data["z"])
+        avatar.target_pos = THREE.Vector3.new(data["x"], data["y"], data["z"])
+        avatar.target_rot = 0.0
         scene.add(avatar)
         other_players[pid] = avatar
 
@@ -377,13 +379,15 @@ def on_ws_message(e):
         pid = data["id"]
         if pid not in other_players:
             avatar = create_steve_avatar()
+            avatar.position.set(data["x"], data["y"], data["z"])
+            avatar.target_pos = THREE.Vector3.new(data["x"], data["y"], data["z"])
+            avatar.target_rot = data.get("rot", 0.0)
             scene.add(avatar)
             other_players[pid] = avatar
-        
-        avatar = other_players[pid]
-        avatar.position.set(data["x"], data["y"], data["z"])
-        if "rot" in data:
-            avatar.rotation.y = data["rot"]
+        else:
+            avatar = other_players[pid]
+            avatar.target_pos.set(data["x"], data["y"], data["z"])
+            avatar.target_rot = data.get("rot", avatar.rotation.y)
 
     elif msg_type == "player_leave":
         pid = data["id"]
@@ -398,7 +402,7 @@ def on_ws_message(e):
             add_voxel(data["x"], data["y"], data["z"], data["block_type"])
 
 try:
-    ws = WebSocket.new(" wss://ports-comics-scheduled-anatomy.trycloudflare.com")
+    ws = WebSocket.new("wss://ports-comics-scheduled-anatomy.trycloudflare.com")
     ws.onopen = create_proxy(on_ws_open)
     ws.onmessage = create_proxy(on_ws_message)
 except Exception:
@@ -443,7 +447,6 @@ def on_key_down(e):
     global selected_slot
     k = e.code
 
-    # Inventory Toggle (E Key)
     if k == "KeyE":
         if inventory_open: close_inventory()
         elif controls.isLocked: open_inventory()
@@ -474,7 +477,6 @@ def on_key_up(e):
 document.addEventListener("keydown", create_proxy(on_key_down))
 document.addEventListener("keyup", create_proxy(on_key_up))
 
-# Raycasting
 raycaster = THREE.Raycaster.new()
 screen_center = THREE.Vector2.new(0, 0)
 
@@ -506,7 +508,6 @@ def on_mouse_down(e):
             p_gy = int(Math.floor(player_pos.y + 0.5))
             p_gz = int(Math.floor(player_pos.z + 0.5))
             
-            # Place the block assigned to the current hotbar slot
             current_block_id = hotbar_slots[selected_slot]
             if not (nx == p_gx and (ny == p_gy or ny == p_gy - 1) and nz == p_gz):
                 add_voxel(nx, ny, nz, current_block_id, sync=True)
@@ -539,7 +540,6 @@ for i in range(1, 7):
     slot.appendChild(inner)
     hotbar.appendChild(slot)
 
-# Populate Creative Inventory Grid
 inv_grid = document.getElementById("inv-grid")
 def create_inv_item_click(bid):
     def on_item_click(e):
@@ -596,7 +596,7 @@ def toggle_gamemode(e):
         status_bar.style.display = "flex"
 
 document.getElementById("mode-btn").addEventListener("click", create_proxy(toggle_gamemode))
-document.getElementById("status-bars").style.display = "none" # Default to Creative
+document.getElementById("status-bars").style.display = "none"
 
 def respawn(e=None):
     global health
@@ -640,7 +640,7 @@ def update_light(e):
     document.getElementById("light-label").innerText = f"Brightness: {int(val * 100)}%"
 light_slider.addEventListener("input", create_proxy(update_light))
 
-# --- GAME LOOP ---
+# --- SMOOTH GAME LOOP ---
 def block_at(x, y, z):
     return f"{int(Math.floor(x + 0.5))},{int(Math.floor(y + 0.5))},{int(Math.floor(z + 0.5))}" in world_voxels
 
@@ -650,6 +650,16 @@ chunk_tick = 0
 def game_loop(timestamp):
     global is_grounded, health, network_sync_timer, chunk_tick
     dt = 0.016
+
+    # Smooth lerp remote players towards target network positions every frame
+    for pid, avatar in other_players.items():
+        if hasattr(avatar, "target_pos"):
+            avatar.position.lerp(avatar.target_pos, 0.25)
+            if hasattr(avatar, "target_rot"):
+                diff = avatar.target_rot - avatar.rotation.y
+                while diff < -3.14159: diff += 6.28318
+                while diff > 3.14159: diff -= 6.28318
+                avatar.rotation.y += diff * 0.25
 
     if controls.isLocked and not inventory_open:
         chunk_tick += 1
@@ -676,7 +686,6 @@ def game_loop(timestamp):
         velocity.x = move_vec.x * speed
         velocity.z = move_vec.z * speed
 
-        # Flight mechanics vs Gravity
         if is_flying:
             if keys["space"]:
                 velocity.y = speed
@@ -710,9 +719,9 @@ def game_loop(timestamp):
 
         camera.position.set(player_pos.x, player_pos.y + 0.6, player_pos.z)
 
-        # Network update throttle
+        # 20Hz Network Sync
         network_sync_timer += dt
-        if network_sync_timer > 0.15 and ws_connected:
+        if network_sync_timer > 0.05 and ws_connected:
             send_socket_message({
                 "type": "move",
                 "x": player_pos.x,
