@@ -398,7 +398,7 @@ def on_ws_message(e):
             add_voxel(data["x"], data["y"], data["z"], data["block_type"])
 
 try:
-    ws = WebSocket.new(" wss://accessing-drain-please-penguin.trycloudflare.com")
+    ws = WebSocket.new(" wss://ports-comics-scheduled-anatomy.trycloudflare.com")
     ws.onopen = create_proxy(on_ws_open)
     ws.onmessage = create_proxy(on_ws_message)
 except Exception:
